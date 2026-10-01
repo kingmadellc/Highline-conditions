@@ -1,0 +1,74 @@
+name: Publish Highline observations
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7,27,47 * * * *'
+    - cron: '41 5 1 * *'
+permissions:
+  contents: read
+concurrency:
+  group: highline-observations
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'kingmadellc/Highline-conditions' && github.ref == 'refs/heads/main'
+    name: Validate observation delivery
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: python3 check-delivery.py
+      - name: Fetch bounded official observations
+        run: python3 fetch-current.py --output site/current.json
+      - name: Verify source times immediately before upload
+        run: python3 fetch-current.py --validate site/current.json
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: site
+          retention-days: 1
+  deploy:
+    name: Deploy observation JSON
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish data only
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+  activity:
+    name: Record monthly feed maintenance
+    if: github.repository == 'kingmadellc/Highline-conditions' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '41 5 1 * *')
+    # Independent of provider success. A provider outage must not disable future attempts.
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: delivery-activity
+      - name: Update only the monthly maintenance record
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import datetime, json
+          from pathlib import Path
+          record={'maintenanceMonthUtc':datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m'),
+                  'purpose':'Observation delivery schedule maintenance; not a NOAA measurement timestamp'}
+          Path('delivery-health.json').write_text(json.dumps(record,indent=2)+'\n')
+          PY
+          git add -- delivery-health.json
+          if git diff --cached --quiet -- delivery-health.json; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Record monthly observation delivery maintenance' -- delivery-health.json
+          git push origin HEAD:delivery-activity
