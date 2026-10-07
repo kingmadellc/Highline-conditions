@@ -15,11 +15,12 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 check-delivery.py
+      - run: python3 daily-checks.py
       - name: Public file allowlist
         run: |
           python3 - <<'PYCODE'
           import subprocess
-          expected={'.gitignore','.github/workflows/observations.yml','.github/workflows/offline-checks.yml','README.md','check-delivery.py','fetch-current.py'}
+          expected={'.gitignore','.github/workflows/observations.yml','.github/workflows/offline-checks.yml','README.md','check-delivery.py','fetch-current.py','daily-publisher.py','daily-checks.py','daily-README.md'}
           tracked=set(subprocess.check_output(['git','ls-files'],text=True).splitlines())
           if tracked!=expected:raise SystemExit('Public source file allowlist differs')
           PYCODE
