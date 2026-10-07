@@ -2,7 +2,7 @@ name: Publish Highline observations
 on:
   workflow_dispatch:
   schedule:
-    - cron: '7,27,47 * * * *'
+    - cron: '0,7,27,47 * * * *'
     - cron: '41 5 1 * *'
 permissions:
   contents: read
@@ -20,10 +20,15 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 check-delivery.py
+      - run: python3 daily-checks.py
+      - name: Restore the fixed daily wave or freeze eligible morning observations
+        run: python3 daily-publisher.py --output-dir site/daily --restore-published
       - name: Fetch bounded official observations
         run: python3 fetch-current.py --output site/current.json
       - name: Verify source times immediately before upload
         run: python3 fetch-current.py --validate site/current.json
+      - name: Verify the daily cutoff and immutable identity
+        run: python3 daily-publisher.py --validate site/daily/current.json
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
