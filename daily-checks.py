@@ -32,6 +32,30 @@ def fixture(now=NOW):
 
 
 class DailyChecks(unittest.TestCase):
+    def test_generations_coexist_without_mutating_old_bytes(self):
+        old = d.build(fixture(), NOW)
+        new = d.build(fixture(), NOW, 'v2')
+        self.assertEqual(new['rulesId'], 'daily-045-v1')
+        self.assertEqual(new['simulationRevision'], '0.45')
+        self.assertEqual(new['challengeId'], 'satellite-beach-daily-045-v1-2026-10-06')
+        self.assertNotEqual(new['manifestHash'], old['manifestHash'])
+        self.assertEqual(new['snapshotPacked'], old['snapshotPacked'])
+        for document, generation in ((old, 'v1'), (new, 'v2')):
+            d.validate(document, generation)
+            with self.assertRaises(ValueError):
+                d.validate(document, 'v2' if generation == 'v1' else 'v1')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            d.publish(root, NOW, fixture())
+            before = (root/'2026-10-06.json').read_bytes()
+            d.publish(root/'v2', NOW, fixture(), generation='v2')
+            d.publish(root/'v2', NOW+dt.timedelta(hours=1), {}, generation='v2')
+            self.assertEqual((root/'2026-10-06.json').read_bytes(), before)
+            self.assertEqual(d.read_manifest((root/'v2/current.json').read_bytes(), 'v2'), new)
+        missing = d.build({}, NOW, 'v2')
+        self.assertEqual(missing['status'], 'unavailable')
+        d.validate(missing, 'v2')
+
     def test_spring_day_is_23_hours(self):
         day = dt.date(2026, 3, 7)
         self.assertEqual(d.boundary(day+dt.timedelta(days=1))-d.boundary(day), dt.timedelta(hours=23))

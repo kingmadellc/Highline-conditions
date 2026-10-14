@@ -23,12 +23,16 @@ jobs:
       - run: python3 daily-checks.py
       - name: Restore the fixed daily wave or freeze eligible morning observations
         run: python3 daily-publisher.py --output-dir site/daily --restore-published
+      - name: Freeze the separate 0.45 daily rules
+        run: python3 daily-publisher.py --generation v2 --output-dir site/daily/v2 --restore-published
       - name: Fetch bounded official observations
         run: python3 fetch-current.py --output site/current.json
       - name: Verify source times immediately before upload
         run: python3 fetch-current.py --validate site/current.json
       - name: Verify the daily cutoff and immutable identity
         run: python3 daily-publisher.py --validate site/daily/current.json
+      - name: Verify the 0.45 identity independently
+        run: python3 daily-publisher.py --generation v2 --validate site/daily/v2/current.json
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
