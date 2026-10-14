@@ -23,6 +23,10 @@ ZONE = ZoneInfo('America/New_York')
 RULES = 'daily-042-v1'
 REVISION = '0.42'
 PUBLIC = 'https://kingmadellc.github.io/Highline-conditions/daily/'
+GENERATIONS = {
+    'v1': (RULES, REVISION, LOCATION+'-', PUBLIC),
+    'v2': ('daily-045-v1', '0.45', LOCATION+'-daily-045-v1-', PUBLIC+'v2/')
+}
 MAX_BYTES = 48000
 PACK_FIELDS = ('sourceKind', 'waveStation', 'waveUnixMinute', 'significantHeightMm',
                'dominantPeriodMs', 'waveFromDegrees', 'windStation', 'windUnixMinute',
@@ -94,8 +98,9 @@ def observed_seed(snapshot_packed):
     return value if value < 0x80000000 else value - 0x100000000
 
 
-def layout(day, snapshot_packed):
-    material = '\n'.join((LOCATION, day.isoformat(), RULES, REVISION, snapshot_packed))
+def layout(day, snapshot_packed, generation='v1'):
+    rules, revision, _, _ = GENERATIONS[generation]
+    material = '\n'.join((LOCATION, day.isoformat(), rules, revision, snapshot_packed))
     value = int(digest(material.encode())[:8], 16) % 999999
     # SurfWave.SequenceIndex(seed) is uint(seed) % 3. Rotating the authored
     # arrangement guarantees adjacent days differ even when weather repeats.
@@ -104,14 +109,15 @@ def layout(day, snapshot_packed):
     return seed, 'surf-wave-sequence-v1:' + str(sequence)
 
 
-def envelope(now):
+def envelope(now, generation='v1'):
+    rules, revision, prefix, _ = GENERATIONS[generation]
     day = active_day(now)
     close = boundary(day + dt.timedelta(days=1))
-    return dict(schemaVersion=1, status='unavailable', challengeId=LOCATION+'-'+day.isoformat(),
+    return dict(schemaVersion=1, status='unavailable', challengeId=prefix+day.isoformat(),
                 locationId=LOCATION, localDate=day.isoformat(), locationTimeZone=ZONE.key,
                 observationCutoffUtc=utc_text(boundary(day)), opensAtUtc=utc_text(boundary(day)),
                 closesAtUtc=utc_text(close), submissionClosesAtUtc=utc_text(close+dt.timedelta(minutes=2)),
-                publishedAtUtc=utc_text(now), rulesId=RULES, simulationRevision=REVISION)
+                publishedAtUtc=utc_text(now), rulesId=rules, simulationRevision=revision)
 
 
 def seal(document):
@@ -123,8 +129,8 @@ def seal(document):
     return result
 
 
-def build(payloads, now):
-    document = envelope(now)
+def build(payloads, now, generation='v1'):
+    document = envelope(now, generation)
     cutoff = parse_utc(document['observationCutoffUtc'])
     feed = importer(cutoff)
     try:
@@ -134,7 +140,7 @@ def build(payloads, now):
         return seal(document)
     snapshot = observed['bundle']['snapshot']
     snapshot_packed = packed(snapshot)
-    seed, signature = layout(dt.date.fromisoformat(document['localDate']), snapshot_packed)
+    seed, signature = layout(dt.date.fromisoformat(document['localDate']), snapshot_packed, generation)
     document.update(status='available', snapshotPacked=snapshot_packed,
                     snapshotHash=digest(snapshot_packed.encode()),
                     observedConditionSeed=observed_seed(snapshot_packed), waveSeed=seed,
@@ -143,11 +149,11 @@ def build(payloads, now):
                     attemptLimits=dict(simulationSeconds=90, elapsedSeconds=600, submissionGraceSeconds=120),
                     rankedServiceAvailable=False)
     result = seal(document)
-    validate(result)
+    validate(result, generation)
     return result
 
 
-def validate(document):
+def validate(document, generation='v1'):
     if len(canonical(document)) > MAX_BYTES or document.get('schemaVersion') != 1:
         raise ValueError('Unsupported/unbounded daily manifest')
     hashless = copy.deepcopy(document)
@@ -155,7 +161,7 @@ def validate(document):
     if claimed != digest(canonical(hashless)):
         raise ValueError('Manifest hash mismatch')
     published = parse_utc(document['publishedAtUtc'])
-    expected = envelope(published)
+    expected = envelope(published, generation)
     for key in expected:
         if key != 'status' and document.get(key) != expected[key]:
             raise ValueError('Daily identity/boundary mismatch: '+key)
@@ -172,7 +178,7 @@ def validate(document):
     # Fresh at the frozen cutoff, never rolling-current freshness at playback time.
     feed.validate(observation, feed.minute(cutoff))
     snapshot_packed = packed(observation['bundle']['snapshot'])
-    seed, signature = layout(dt.date.fromisoformat(document['localDate']), snapshot_packed)
+    seed, signature = layout(dt.date.fromisoformat(document['localDate']), snapshot_packed, generation)
     for key, value in dict(snapshotPacked=snapshot_packed, snapshotHash=digest(snapshot_packed.encode()),
                            observedConditionSeed=observed_seed(snapshot_packed), waveSeed=seed,
                            layoutSignature=signature, rankedServiceAvailable=False,
@@ -183,13 +189,13 @@ def validate(document):
     return document
 
 
-def read_manifest(data):
+def read_manifest(data, generation='v1'):
     if len(data) > MAX_BYTES:
         raise ValueError('Daily manifest exceeds bound')
-    return validate(json.loads(data))
+    return validate(json.loads(data), generation)
 
 
-def install_immutable(path, data):
+def install_immutable(path, data, generation='v1'):
     """Publish complete bytes exclusively; concurrent writers read the winner."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -204,31 +210,31 @@ def install_immutable(path, data):
         except FileExistsError:
             pass
         result = path.read_bytes()
-        read_manifest(result)
+        read_manifest(result, generation)
         return result
     finally:
         if temporary and os.path.exists(temporary):
             os.unlink(temporary)
 
 
-def restore_day(output, day, feed):
+def restore_day(output, day, feed, generation='v1'):
     path = output / (day.isoformat()+'.json')
     if path.exists():
         data = path.read_bytes()
     else:
         try:
-            data = feed.fetch(PUBLIC+day.isoformat()+'.json')
+            data = feed.fetch(GENERATIONS[generation][3]+day.isoformat()+'.json')
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 return None
             raise
-    existing = read_manifest(data)
+    existing = read_manifest(data, generation)
     if existing['status'] != 'available' or existing['localDate'] != day.isoformat():
         raise ValueError('Published daily identity mismatch')
-    return install_immutable(path, data)
+    return install_immutable(path, data, generation)
 
 
-def publish(output, now, payloads=None, restore_published=False, raw_dir=None):
+def publish(output, now, payloads=None, restore_published=False, raw_dir=None, generation='v1'):
     output = Path(output)
     day = active_day(now)
     cutoff = boundary(day)
@@ -237,7 +243,7 @@ def publish(output, now, payloads=None, restore_published=False, raw_dir=None):
     if restore_published:
         # The Pages feed retains today's and yesterday's dated files. Longer
         # history belongs to the score service's pinned manifest records.
-        restore_day(output, day-dt.timedelta(days=1), feed)
+        restore_day(output, day-dt.timedelta(days=1), feed, generation)
     if dated.exists():
         data = dated.read_bytes()
     else:
@@ -245,7 +251,7 @@ def publish(output, now, payloads=None, restore_published=False, raw_dir=None):
         if restore_published:
             # HTTP failures other than a confirmed 404 fail closed: rebuilding on
             # a transient outage could replace an already-published wave.
-            data = restore_day(output, day, feed)
+            data = restore_day(output, day, feed, generation)
         if data is None:
             if payloads is None:
                 payloads = {}
@@ -263,14 +269,14 @@ def publish(output, now, payloads=None, restore_published=False, raw_dir=None):
                     (directory/(sha+'.raw')).write_bytes(payload)
                     receipts.append(dict(url=url, rawSha256=sha))
                 feed.atomic_write(directory/(day.isoformat()+'-sources.json'), canonical(receipts)+b'\n')
-            document = build(payloads, now)
+            document = build(payloads, now, generation)
             data = canonical(document)+b'\n'
             if document['status'] == 'available':
                 previous = output / ((day-dt.timedelta(days=1)).isoformat()+'.json')
-                if previous.exists() and read_manifest(previous.read_bytes()).get('layoutSignature') == document['layoutSignature']:
+                if previous.exists() and read_manifest(previous.read_bytes(), generation).get('layoutSignature') == document['layoutSignature']:
                     raise ValueError('Daily arrangement repeats yesterday; hold publication')
-                data = install_immutable(dated, data)
-    document = read_manifest(data)
+                data = install_immutable(dated, data, generation)
+    document = read_manifest(data, generation)
     if document['localDate'] != day.isoformat():
         raise ValueError('Existing daily identity mismatch')
     feed.atomic_write(output/'current.json', data)
@@ -279,16 +285,17 @@ def publish(output, now, payloads=None, restore_published=False, raw_dir=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--generation', choices=tuple(GENERATIONS), default='v1')
     parser.add_argument('--output-dir', type=Path, default=Path('site/daily'))
     parser.add_argument('--restore-published', action='store_true')
     parser.add_argument('--raw-dir', type=Path)
     parser.add_argument('--validate', type=Path)
     args = parser.parse_args()
     if args.validate:
-        document = read_manifest(args.validate.read_bytes())
+        document = read_manifest(args.validate.read_bytes(), args.generation)
     else:
         document = publish(args.output_dir, dt.datetime.now(UTC),
-                           restore_published=args.restore_published, raw_dir=args.raw_dir)
+                           restore_published=args.restore_published, raw_dir=args.raw_dir, generation=args.generation)
     print(json.dumps({key:document[key] for key in ('status', 'challengeId', 'opensAtUtc', 'closesAtUtc', 'manifestHash')}))
 
 
